@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentPay — an AI agent that negotiates, pays in USDC on Arc, and proves it onchain</title>
+<!--
+  AgentPay — University Blockchain Conference Hackathon 2026
+  Track: Agentic Payments and AI. Chain award: Best use of Arc.
+  Built entirely during the hackathon week (13–20 Nov 2026) by Jacku P (solo).
+  Single-file web app, no backend, no build step. Testnet only.
+
+  CHAIN CONFIG (config-first: pivoting chains = swapping this one object):
+  Arc Testnet is the live config. Base Sepolia fallback values are kept in the
+  FALLBACK object below and documented in README.md.
+-->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3; --dim:#8b949e;
+          --green:#3fb950; --amber:#d29922; --red:#f85149; --blue:#58a6ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt); font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { padding:18px 22px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; }
+  header h1 { margin:0; font-size:22px; } header h1 span { color:var(--blue); }
+  header p { margin:0; color:var(--dim); }
+  .warn { background:#3a2b00; border-bottom:1px solid var(--amber); color:#ffd479; padding:9px 22px; font-size:13.5px; }
+  .warn b { color:#fff; }
+  main { max-width:1180px; margin:0 auto; padding:18px 22px 60px; display:grid; gap:16px;
+         grid-template-columns:1fr 1fr; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+  .card h2 { margin:0 0 10px; font-size:16px; }
+  .card h3 { margin:14px 0 6px; font-size:14px; color:var(--blue); }
+  .full { grid-column:1 / -1; }
+  label { display:block; font-size:13px; color:var(--dim); margin:10px 0 3px; }
+  input[type=text], input[type=number], select, textarea { width:100%; background:#0d1117; color:var(--txt);
+    border:1px solid var(--line); border-radius:6px; padding:8px 10px; font:inherit; }
+  textarea { min-height:64px; resize:vertical; }
+  button { background:#238636; color:#fff; border:0; border-radius:6px; padding:9px 16px; font:inherit;
+    font-weight:600; cursor:pointer; margin:6px 6px 0 0; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.secondary { background:#21262d; border:1px solid var(--line); }
+  button.danger { background:#da3633; }
+  button.approve { background:#1f6feb; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; word-break:break-all; }
+  .big { font-size:26px; font-weight:700; }
+  .muted { color:var(--dim); font-size:13px; }
+  .ok { color:var(--green); } .bad { color:var(--red); } .warnTxt { color:var(--amber); }
+  .gauge { height:14px; background:#0d1117; border:1px solid var(--line); border-radius:7px; overflow:hidden; }
+  .gauge > div { height:100%; background:var(--green); width:0%; transition:width .4s; }
+  .gauge.over > div { background:var(--red); }
+  #log, #txFeed { list-style:none; margin:0; padding:0; max-height:340px; overflow:auto; }
+  #log li, #txFeed li { padding:7px 4px; border-bottom:1px solid #21262d; font-size:13.5px; }
+  #log li time, #txFeed li time { color:var(--dim); font-size:11.5px; display:block; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:20px; font-size:11.5px; font-weight:700; }
+  .pill.paid { background:#122b1a; color:var(--green); } .pill.pend { background:#2b2305; color:var(--amber); }
+  .pill.fail { background:#3a1414; color:var(--red); } .pill.neg { background:#12233d; color:var(--blue); }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  td, th { padding:6px 4px; border-bottom:1px solid #21262d; text-align:left; }
+  .sellerRow { display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid #21262d; }
+  .sellerRow:last-child { border-bottom:0; }
+  .sellerRow .nm { flex:1; } .sellerRow .pr { color:var(--dim); font-size:12.5px; }
+  details { font-size:13px; color:var(--dim); } details summary { cursor:pointer; color:var(--blue); }
+  #approvalBox { border:1px solid var(--amber); border-radius:8px; padding:12px; margin-top:12px; display:none; }
+  #approvalBox.show { display:block; }
+  #briefing { white-space:pre-wrap; background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:12px; min-height:90px; }
+  .switchRow { display:flex; gap:14px; flex-wrap:wrap; }
+  .switchRow label { display:flex; gap:6px; align-items:center; margin:4px 0; color:var(--txt); }
+  @media (max-width:860px){ main{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>AgentPay <span>— pay-per-request, negotiated, onchain</span></h1>
+  <p>An AI agent with a wallet, a budget, and rules. Track: Agentic Payments and AI · Chain: Arc Testnet (USDC is the gas).</p>
+</header>
+<div class="warn">⚠️ <b>TESTNET DEMO ONLY.</b> The agent wallet key is generated in this page and kept in
+<b>session storage only</b> — it is never sent anywhere, never persisted to disk, and never committed to the repo.
+Never send mainnet funds to it. All payments are test USDC on Arc Testnet (chain 5042002), worth $0.</div>
+
+<main>
+  <!-- ============ WALLETS ============ -->
+  <section class="card" id="wallets">
+    <h2>👛 Wallets <span id="netStatus" class="pill pend">connecting…</span></h2>
+    <p class="muted">Agent wallet is generated in-page on first load. The seller wallet receives payments so the full
+    money loop (agent → seller) is visible on the explorer. Sellers are simulated priced services; <b>settlement is real, onchain</b>.</p>
+    <h3>Agent wallet</h3>
+    <div class="mono" id="agentAddr">—</div>
+    <div>Balance: <span class="big" id="agentBal">—</span> USDC <span class="muted">(ERC-20, 6 dp)</span></div>
+    <p><a id="faucetLink" href="#" target="_blank" rel="noopener">⛽ Fund from the Circle faucet (Arc Testnet → USDC)</a></p>
+    <h3>Seller wallet <span class="muted">(receives payments)</span></h3>
+    <div class="mono" id="sellerAddr">—</div>
+    <div>Balance: <span class="big" id="sellerBal">—</span> USDC</div>
+    <p>
+      <button class="secondary" id="btnRefresh">↻ Refresh balances</button>
+      <button class="secondary" id="btnNewWallets">🎲 New wallets</button>
+    </p>
+    <label>Or import a funded testnet agent key (optional — session only, never leaves this page)</label>
+    <input type="text" id="importKey" placeholder="0x… private key (testnet only)" autocomplete="off">
+    <button class="secondary" id="btnImport">Import key</button>
+    <span class="muted" id="importMsg"></span>
+  </section>
+
+  <!-- ============ TASK + POLICY ============ -->
+  <section class="card" id="taskPanel">
+    <h2>🧠 Task &amp; guardrails</h2>
+    <label>Demo task</label>
+    <select id="taskSelect">
+      <option value="briefing">Morning market briefing — buy market data, headlines/sentiment, AI summary</option>
+      <option value="watch">Weekend crypto watch — buy market data + AI summary (different item mix)</option>
+    </select>
+    <label>Custom task (optional — the agent decomposes it into the same purchasable items)</label>
+    <input type="text" id="customTask" placeholder="e.g. Build my morning market briefing">
+    <div class="switchRow">
+      <div><label>Total budget (USDC)</label><input type="number" id="inBudget" value="1.00" min="0.05" step="0.05"></div>
+      <div><label>Per-payment cap (USDC)</label><input type="number" id="inCap" value="0.10" min="0.01" step="0.01"></div>
+      <div><label>Human-approval threshold (USDC)</label><input type="number" id="inThreshold" value="0.05" min="0.01" step="0.01"></div>
+    </div>
+    <h3>Seller allowlist — untick a seller and the agent refuses its quotes, even when cheapest</h3>
+    <div class="switchRow" id="allowlist"></div>
+    <p>
+      <button id="btnRun">▶ Run the agent</button>
+      <button class="danger" id="btnKill">■ Kill switch</button>
+    </p>
+    <div id="approvalBox">
+      <b class="warnTxt">⏸ Human approval needed</b>
+      <p id="approvalText"></p>
+      <button class="approve" id="btnApprove">✓ Approve payment</button>
+      <button class="danger" id="btnReject">✕ Reject</button>
+    </div>
+    <h3>Budget</h3>
+    <div class="gauge" id="gaugeWrap"><div id="gaugeBar"></div></div>
+    <div class="muted"><span id="spentTxt">Spent 0.00</span> / <span id="budgetTxt">Budget 1.00</span> USDC ·
+    <span id="remainTxt">Remaining 1.00</span></div>
+  </section>
+
+  <!-- ============ DECISION LOG ============ -->
+  <section class="card">
+    <h2>📜 Decision log <span class="muted">— every step the agent takes, and why</span></h2>
+    <ul id="log"><li class="muted">Agent idle. Pick a task and press “Run the agent”.</li></ul>
+  </section>
+
+  <!-- ============ TX FEED ============ -->
+  <section class="card">
+    <h2>⛓️ Onchain payments <span class="muted">— every tx links to Arcscan</span></h2>
+    <ul id="txFeed"><li class="muted">No payments yet this session.</li></ul>
+    <h3>Run history (this session)</h3>
+    <table><thead><tr><th>Task</th><th>Items</th><th>Spent</th><th>Status</th></tr></thead>
+    <tbody id="historyBody"><tr><td colspan="4" class="muted">No runs yet.</td></tr></tbody></table>
+  </section>
+
+  <!-- ============ QUOTES / BRIEFING ============ -->
+  <section class="card">
+    <h2>💬 Quotes &amp; negotiation</h2>
+    <div id="quotes"><p class="muted">Quotes appear here while the agent runs.</p></div>
+  </section>
+
+  <section class="card">
+    <h2>📰 Assembled briefing <span class="muted">— built only from data the agent paid for</span></h2>
+    <div id="briefing">Nothing purchased yet. Run the agent and the briefing assembles here from verified, paid-for deliveries.</div>
+    <h3>🔎 Track any Arc address (read-only)</h3>
+    <input type="text" id="trackAddr" placeholder="0x… Arc address">
+    <button class="secondary" id="btnTrack">Check USDC balance</button>
+    <span id="trackOut" class="muted"></span>
+  </section>
+
+  <section class="card full">
+    <h2>How it works — decision loop &amp; safety limits</h2>
+    <p><b>Decision loop:</b> task → decompose into purchasable items → collect quotes from allowlisted sellers →
+    <b>negotiate</b> (accept at/below target price; else counter-offer once at the midpoint; accept a counter at/below the cap, else walk away and try the next seller) →
+    <b>policy check</b> (budget remaining, per-payment cap, allowlist, approval threshold) → human approval if above threshold →
+    <b>pay</b> (ERC-20 USDC <span class="mono">transfer</span> on Arc) → <b>verify</b> receipt + balance delta → delivery gated on payment → log everything.</p>
+    <p><b>Safety limits (all enforced before money moves):</b> total budget (hard stop), per-payment cap (quotes above it are refused outright, no negotiation),
+    seller allowlist, human-approval threshold, kill switch (halts mid-run, state stays inspectable).</p>
+    <p class="muted">Chain: Arc Testnet · chain ID 5042002 · RPC <span class="mono">https://rpc.testnet.arc.io</span> ·
+    USDC ERC-20 <span class="mono">0x3600000000000000000000000000000000000000</span> (6 decimals) · Explorer
+    <a href="https://testnet.arcscan.app" target="_blank" rel="noopener">testnet.arcscan.app</a>.
+    Arc's native USDC balance is 18 decimals while the ERC-20 interface is 6 decimals over the same balance — AgentPay uses
+    <b>only the ERC-20 interface</b> for every read and write, never a raw native balance. Full docs in the repo README.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+/* ================= CHAIN CONFIG (one object — pivot = swap this) ================= */
+const CHAIN = {
+  name: "Arc Testnet", chainId: 5042002,
+  rpc: "https://rpc.testnet.arc.io",
+  explorer: "https://testnet.arcscan.app",
+  usdc: "0x3600000000000000000000000000000000000000",
+  decimals: 6,
+  faucet: "https://faucet.circle.com",
+};
+/* Fallback (tested reachable, not wired into the UI): Base Sepolia — chain 84532,
+   RPC https://sepolia.base.org, USDC 0x036CbD53842c5426634e7929541eC2318f3dCF7e, gas = Sepolia ETH. */
+const FALLBACK = { name: "Base Sepolia", chainId: 84532, rpc: "https://sepolia.base.org",
+  explorer: "https://sepolia.basescan.org", usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e", decimals: 6 };
+
+const ERC20_ABI = ["function balanceOf(address) view returns (uint256)",
+  "function transfer(address to, uint256 amount) returns (bool)",
+  "function decimals() view returns (uint8)"];
+
+/* ================= SELLERS (simulated counterparties — honest framing: settlement is real) =================
+   Each seller quotes per item. `floor` = lowest fraction of its quote it will accept on a counter-offer.
+   C (BrieflyAI) quotes high and negotiates; A is cheap/fast; B is mid-priced. */
+const SELLERS = [
+  { id: "A", name: "TickFeed Market Data", desc: "cheap · fast", floor: 0.90 },
+  { id: "B", name: "HeadlineWire Sentiment", desc: "mid-priced · firm", floor: 0.95 },
+  { id: "C", name: "BrieflyAI Summary", desc: "premium · negotiates", floor: 0.60 },
+];
+/* Quotes in USDC per item per seller. Targets are what the agent aims to pay. */
+const ITEMS = {
+  "market-data": { label: "Live market data (BTC/ETH/SOL prices, 24h moves)",
+    target: 0.03, quotes: { A: 0.02, B: 0.04, C: 0.07 },
+    delivers: "BTC $97,420 (+1.8% 24h) · ETH $3,310 (+0.9%) · SOL $188.40 (−0.6%) · Total crypto mcap $3.41T." },
+  "headlines": { label: "Headlines + sentiment scan (top 20 stories)",
+    target: 0.04, quotes: { A: 0.05, B: 0.03, C: 0.06 },
+    delivers: "Sentiment: 62% bullish across 20 headlines. Top story: ETF inflows $412M; most-shared: L2 fee cuts." },
+  "ai-summary": { label: "AI summary — one-paragraph morning take",
+    target: 0.06, quotes: { A: 0.08, B: 0.07, C: 0.09 },
+    delivers: "Take: risk-on tone with ETF inflows leading; watch ETH/BTC ratio and SOL support at $182. (Summary bought, not generated for free.)" },
+};
+const TASKS = {
+  briefing: { label: "Morning market briefing", items: ["market-data", "headlines", "ai-summary"] },
+  watch: { label: "Weekend crypto watch", items: ["market-data", "ai-summary"] },
+};
+
+/* ================= STATE ================= */
+let provider, usdc, agentWallet, sellerWallet;
+let running = false, killed = false, spent = 0, budget = 1.00;
+let approvalResolve = null;
+const $ = id => document.getElementById(id);
+const fmt = n => (Math.round(n * 1e6) / 1e6).toFixed(6).replace(/0+$/, "").replace(/\.$/, ".0");
+const now = () => new Date().toLocaleTimeString();
+function log(msg, cls) {
+  const ul = $("log");
+  if (ul.querySelector(".muted") && ul.children.length === 1) ul.innerHTML = "";
+  const li = document.createElement("li");
+  li.innerHTML = `<time>${now()}</time><span class="${cls || ""}">${msg}</span>`;
+  ul.prepend(li);
+}
+function txFeed(item, seller, amount, hash, status) {
+  const ul = $("txFeed");
+  if (ul.querySelector(".muted") && ul.children.length === 1) ul.innerHTML = "";
+  const li = document.createElement("li");
+  const pill = status === "paid" ? "paid" : status === "failed" ? "fail" : "pend";
+  li.innerHTML = `<time>${now()}</time><b>${item}</b> — ${seller} — <b>${fmt(amount)} USDC</b>
+    <span class="pill ${pill}">${status.toUpperCase()}</span><br>
+    ${hash ? `<a class="mono" href="${CHAIN.explorer}/tx/${hash}" target="_blank" rel="noopener">${hash.slice(0, 18)}… ↗ Arcscan</a>` : "no tx (not paid)"}`;
+  ul.prepend(li);
+}
+function renderGauge() {
+  $("spentTxt").textContent = `Spent ${spent.toFixed(2)}`;
+  $("budgetTxt").textContent = `Budget ${budget.toFixed(2)}`;
+  $("remainTxt").textContent = `Remaining ${Math.max(0, budget - spent).toFixed(2)}`;
+  $("gaugeBar").style.width = Math.min(100, spent / budget * 100) + "%";
+  $("gaugeWrap").classList.toggle("over", spent > budget);
+}
+
+/* ================= WALLETS ================= */
+function makeWallets(agentKey) {
+  try {
+    agentWallet = agentKey ? new ethers.Wallet(agentKey) : ethers.Wallet.createRandom();
+    sellerWallet = ethers.Wallet.createRandom();
+    sessionStorage.setItem("agentpay_agent_key", agentWallet.privateKey); // session only — never leaves the page
+    sessionStorage.setItem("agentpay_seller_key", sellerWallet.privateKey);
+    $("agentAddr").textContent = agentWallet.address;
+    $("sellerAddr").textContent = sellerWallet.address;
+    $("faucetLink").href = CHAIN.faucet;
+    $("faucetLink").textContent = `⛽ Fund ${agentWallet.address.slice(0, 10)}… from the Circle faucet (Arc Testnet → USDC)`;
+    refreshBalances();
+  } catch (e) { log("Wallet error: " + e.message, "bad"); }
+}
+async function refreshBalances() {
+  try {
+    const a = await usdc.balanceOf(agentWallet.address);
+    const s = await usdc.balanceOf(sellerWallet.address);
+    $("agentBal").textContent = fmt(Number(ethers.formatUnits(a, CHAIN.decimals)));
+    $("sellerBal").textContent = fmt(Number(ethers.formatUnits(s, CHAIN.decimals)));
+  } catch (e) { log("Balance read failed (RPC error): " + e.message, "bad"); }
+}
+
+/* ================= NEGOTIATION ================= */
+function negotiate(itemKey, quotes) {
+  // quotes: [{seller, price}] allowlisted only, cheapest first. Returns {seller, price, story[]} or null.
+  const item = ITEMS[itemKey], story = [];
+  for (const q of quotes) {
+    const seller = SELLERS.find(s => s.id === q.seller);
+    if (q.price > policy.cap) {
+      story.push(`Seller ${q.seller} quoted ${fmt(q.price)} — above my per-payment cap of ${policy.cap.toFixed(2)}. Refused outright, no negotiation.`);
+      continue;
+    }
+    if (q.price <= item.target) {
+      story.push(`Seller ${q.seller} quoted ${fmt(q.price)} — at/below my ${fmt(item.target)} target. Accepted, no haggling needed.`);
+      return { seller, price: q.price, story };
+    }
+    const counter = Math.round(((item.target + q.price) / 2) * 1e6) / 1e6;
+    story.push(`Seller ${q.seller} quoted ${fmt(q.price)} — above my ${fmt(item.target)} target. Counter-offered once at the midpoint: ${fmt(counter)}.`);
+    if (counter >= q.price * seller.floor) {
+      story.push(`Seller ${q.seller} accepted the counter at ${fmt(counter)} (their floor was ${fmt(q.price * seller.floor)}).`);
+      return { seller, price: counter, story };
+    }
+    story.push(`Seller ${q.seller} rejected ${fmt(counter)} (below their floor ${fmt(q.price * seller.floor)}). Walking away.`);
+  }
+  story.push(`No seller left for “${item.label}” — item skipped, budget untouched.`);
+  return { seller: null, price: null, story };
+}
+
+/* ================= POLICY + PAYMENT ================= */
+let policy = { cap: 0.10, threshold: 0.05 };
+function askApproval(text) {
+  return new Promise(res => {
+    approvalResolve = res;
+    $("approvalText").textContent = text;
+    $("approvalBox").classList.add("show");
+  });
+}
+async function paySeller(itemKey, seller, amount) {
+  const item = ITEMS[itemKey];
+  const balBefore = await usdc.balanceOf(agentWallet.address);
+  const need = ethers.parseUnits(amount.toFixed(6), CHAIN.decimals);
+  if (balBefore < need) throw new Error(`insufficient balance — agent holds ${fmt(Number(ethers.formatUnits(balBefore, 6)))} USDC, needs ${fmt(amount)}`);
+  const signer = agentWallet.connect(provider);
+  const c = new ethers.Contract(CHAIN.usdc, ERC20_ABI, signer);
+  let tx, receipt;
+  try {
+    tx = await c.transfer(sellerWallet.address, need);
+    log(`💸 Payment sent: ${fmt(amount)} USDC → ${seller.name}… waiting for receipt (tx ${tx.hash.slice(0, 14)}…).`);
+    receipt = await tx.wait();
+  } catch (e) { throw new Error("payment failed / RPC error: " + (e.reason || e.message)); }
+  if (receipt.status !== 1) throw new Error("transaction reverted onchain (status 0)");
+  const balAfter = await usdc.balanceOf(agentWallet.address);
+  const delta = Number(ethers.formatUnits(balBefore - balAfter, CHAIN.decimals));
+  if (Math.abs(delta - amount) > 0.000001) log(`⚠️ Receipt OK but balance delta (${fmt(delta)}) ≠ paid amount (${fmt(amount)}) — flagged, not trusted.`, "warnTxt");
+  return { hash: tx.hash, receipt };
+}
+
+/* ================= MAIN RUN ================= */
+async function runAgent() {
+  if (running) return;
+  running = true; killed = false; spent = 0;
+  $("btnRun").disabled = true;
+  const taskKey = $("taskSelect").value;
+  const task = TASKS[taskKey];
+  const custom = $("customTask").value.trim();
+  budget = parseFloat($("inBudget").value) || 1.00;
+  policy = { cap: parseFloat($("inCap").value) || 0.10, threshold: parseFloat($("inThreshold").value) || 0.05 };
+  const allowed = SELLERS.filter(s => $("allow-" + s.id).checked).map(s => s.id);
+  renderGauge();
+  $("quotes").innerHTML = "";
+  $("briefing").textContent = "";
+  log(`🚀 Task received: “${custom || task.label}”. Budget ${budget.toFixed(2)} USDC, cap ${policy.cap.toFixed(2)}, approval above ${policy.threshold.toFixed(2)}. Decomposing into ${task.items.length} purchasable items…`);
+  const bought = [];
+  for (const itemKey of task.items) {
+    if (killed) { log("■ Kill switch hit — run halted. State stays inspectable; nothing further will be paid.", "bad"); break; }
+    const item = ITEMS[itemKey];
+    log(`🔍 Item: ${item.label} (target ${fmt(item.target)} USDC). Collecting quotes from allowlisted sellers…`);
+    const quotes = Object.entries(item.quotes)
+      .filter(([sid]) => allowed.includes(sid))
+      .map(([sid, price]) => ({ seller: sid, price }))
+      .sort((a, b) => a.price - b.price);
+    if (!quotes.length) { log(`⛔ No allowlisted seller quotes for “${item.label}” — all sellers are toggled off. Item skipped.`, "bad"); continue; }
+    // Show the quote table + negotiation arithmetic ("Why this price?")
+    const qDiv = document.createElement("div");
+    qDiv.innerHTML = `<h3>${item.label}</h3><table><tr><th>Seller</th><th>Quote</th><th>vs target ${fmt(item.target)}</th></tr>${
+      quotes.map(q => `<tr><td>${q.seller} — ${SELLERS.find(s => s.id === q.seller).name}</td><td>${fmt(q.price)} USDC</td><td>${q.price <= item.target ? "✓ at/below" : "above — will counter"}</td></tr>`).join("")}</table>
+      <details><summary>Why this price?</summary>Target ${fmt(item.target)} USDC. Cheapest quote ${fmt(quotes[0].price)} USDC.
+      ${quotes[0].price > item.target ? `Counter = midpoint (target + quote) / 2 = (${fmt(item.target)} + ${fmt(quotes[0].price)}) / 2 = ${fmt((item.target + quotes[0].price) / 2)} USDC. Seller accepts if that clears their floor.` : "No counter needed — quote already meets the target."}</details>`;
+    $("quotes").appendChild(qDiv);
+    const deal = negotiate(itemKey, quotes);
+    deal.story.forEach(s => log(s));
+    if (!deal.seller) { txFeed(item.label, "—", 0, null, "failed"); continue; }
+    if (deal.price > policy.cap) { log(`⛔ Agreed price ${fmt(deal.price)} exceeds the per-payment cap — refused.`, "bad"); continue; }
+    if (spent + deal.price > budget) {
+      log(`🛑 Budget hard stop: ${fmt(deal.price)} would take spend to ${fmt(spent + deal.price)} over the ${budget.toFixed(2)} budget. Item skipped — the agent never exceeds its budget.`, "bad");
+      continue;
+    }
+    if (deal.price > policy.threshold) {
+      log(`⏸ ${fmt(deal.price)} is above the approval threshold (${policy.threshold.toFixed(2)}). Pausing for a human…`);
+      const ok = await askApproval(`Pay ${fmt(deal.price)} USDC to ${deal.seller.name} for “${item.label}”? (Above your ${policy.threshold.toFixed(2)} approval threshold; budget remaining ${fmt(budget - spent)}.)`);
+      $("approvalBox").classList.remove("show");
+      if (!ok) { log(`✕ Human rejected the ${fmt(deal.price)} payment for “${item.label}”. Item skipped, no money moved.`, "bad"); txFeed(item.label, deal.seller.name, deal.price, null, "failed"); continue; }
+      log("✓ Human approved. Paying…");
+    }
+    try {
+      const { hash } = await paySeller(itemKey, deal.seller, deal.price);
+      spent += deal.price; renderGauge();
+      log(`✅ Paid ${fmt(deal.price)} USDC to ${deal.seller.name}. Receipt verified (status 1) and balance delta confirmed. Delivery unlocked.`, "ok");
+      txFeed(item.label, deal.seller.name, deal.price, hash, "paid");
+      bought.push({ item: itemKey, seller: deal.seller.name, price: deal.price, hash });
+      const b = $("briefing");
+      if (!bought.length || b.textContent.startsWith("Nothing")) b.textContent = "";
+      b.textContent += (b.textContent ? "\n\n" : "") + "• " + item.delivers + `  [paid ${fmt(deal.price)} USDC — ${CHAIN.explorer}/tx/${hash}]`;
+    } catch (e) {
+      log(`❌ Payment failed for “${item.label}”: ${e.message}`, "bad");
+      txFeed(item.label, deal.seller.name, deal.price, null, "failed");
+    }
+    await refreshBalances();
+  }
+  const status = killed ? "halted by kill switch" : bought.length === task.items.length ? "complete" : "partial";
+  log(`🏁 Run finished (${status}): ${bought.length}/${task.items.length} items bought, ${spent.toFixed(2)} USDC spent of ${budget.toFixed(2)} budget.`, bought.length ? "ok" : "warnTxt");
+  const hb = $("historyBody");
+  if (hb.querySelector(".muted")) hb.innerHTML = "";
+  hb.insertAdjacentHTML("afterbegin", `<tr><td>${custom || task.label}</td><td>${bought.length}/${task.items.length}</td><td>${spent.toFixed(2)} USDC</td><td>${status}</td></tr>`);
+  running = false;
+  $("btnRun").disabled = false;
+}
+
+/* ================= WIRING ================= */
+$("allowlist").innerHTML = SELLERS.map(s =>
+  `<label><input type="checkbox" id="allow-${s.id}" checked> ${s.id} — ${s.name} <span class="muted">${s.desc}</span></label>`).join("");
+$("btnRun").onclick = runAgent;
+$("btnKill").onclick = () => { killed = true; log("■ Kill switch pressed — the agent will stop after the current step. No new payments.", "bad"); };
+$("btnApprove").onclick = () => { $("approvalBox").classList.remove("show"); approvalResolve && approvalResolve(true); };
+$("btnReject").onclick = () => { $("approvalBox").classList.remove("show"); approvalResolve && approvalResolve(false); };
+$("btnRefresh").onclick = refreshBalances;
+$("btnNewWallets").onclick = () => { sessionStorage.removeItem("agentpay_agent_key"); makeWallets(); log("🎲 Fresh agent + seller wallets generated (session only). Fund the new agent address from the faucet."); };
+$("btnImport").onclick = () => {
+  const k = $("importKey").value.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(k)) { $("importMsg").textContent = " — not a valid 32-byte hex key."; return; }
+  makeWallets(k); $("importMsg").textContent = " — imported (session only).";
+  log("🔑 Funded testnet key imported into this session only.");
+};
+$("btnTrack").onclick = async () => {
+  const a = $("trackAddr").value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(a)) { $("trackOut").textContent = " — enter a valid 0x address."; return; }
+  try { const b = await usdc.balanceOf(a); $("trackOut").textContent = ` — ${fmt(Number(ethers.formatUnits(b, 6)))} USDC`; }
+  catch (e) { $("trackOut").textContent = " — read failed: " + e.message; }
+};
+
+/* ================= BOOT ================= */
+(async function boot() {
+  if (typeof ethers === "undefined") { $("netStatus").textContent = "ethers.js failed to load — check connection"; $("netStatus").className = "pill fail"; return; }
+  provider = new ethers.JsonRpcProvider(CHAIN.rpc);
+  usdc = new ethers.Contract(CHAIN.usdc, ERC20_ABI, provider);
+  try {
+    const net = await provider.getNetwork();
+    const okChain = Number(net.chainId) === CHAIN.chainId;
+    $("netStatus").textContent = okChain ? `● ${CHAIN.name} · chain ${net.chainId}` : `⚠ wrong chain ${net.chainId}`;
+    $("netStatus").className = "pill " + (okChain ? "paid" : "fail");
+    const dec = await usdc.decimals();
+    log(`Connected to ${CHAIN.name} (chain ${net.chainId}). USDC ERC-20 interface ${CHAIN.usdc.slice(0, 10)}… — decimals() = ${dec} (6 dp convention, never native 18 dp).`, "ok");
+  } catch (e) {
+    $("netStatus").textContent = "RPC unreachable";
+    $("netStatus").className = "pill fail";
+    log("RPC unreachable: " + e.message + " — check connection; fallback chain values are in README.md.", "bad");
+  }
+  const saved = sessionStorage.getItem("agentpay_agent_key");
+  makeWallets(saved || undefined);
+  renderGauge();
+})();
+</script>
+</body>
+</html>
